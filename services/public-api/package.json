@@ -20,6 +20,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.758.0",
+    "@aws-sdk/client-sqs": "^3.1106.0",
+    "@aws-sdk/client-ssm": "^3.1106.0",
     "@aws-sdk/lib-dynamodb": "^3.758.0",
     "@misneach/public-flows": "file:../../packages/public-flows",
     "mysql2": "^3.11.5"

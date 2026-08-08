@@ -37,6 +37,25 @@ class InMemoryDynamo {
       return { Items: input.Limit ? items.slice(0, input.Limit) : items };
     }
 
+    if (command.constructor.name === 'UpdateCommand') {
+      const key = this.keyFor(String(input.TableName), input.Key);
+      const item = table.get(key);
+      if (!item && input.ConditionExpression) {
+        throw { name: 'ConditionalCheckFailedException' };
+      }
+      if (!item) throw new Error(`Missing item ${key}`);
+      item.emailStatus = input.ExpressionAttributeValues[':emailStatus'];
+      item.emailStatusUpdatedAt = input.ExpressionAttributeValues[':emailStatusUpdatedAt'];
+      item.updatedAt = input.ExpressionAttributeValues[':updatedAt'];
+      if (input.ExpressionAttributeValues[':emailFailureReason']) {
+        item.emailFailureReason = input.ExpressionAttributeValues[':emailFailureReason'];
+      } else {
+        delete item.emailFailureReason;
+      }
+      table.set(key, item);
+      return {};
+    }
+
     throw new Error(`Unsupported command ${command.constructor.name}`);
   }
 
@@ -143,6 +162,7 @@ describe('SurveysRepository', () => {
       town: 'Galway',
       createdAt: '2026-08-06T12:00:00.000Z',
     });
+    expect(created.saved.emailStatus).toBe('pending');
     expect(created.response.links.manageUrl).toBe('https://misneach.ie/survey/manage?t=token-1');
 
     await expect(repo.getCampaignPublic('id-1')).resolves.toEqual({
@@ -156,6 +176,22 @@ describe('SurveysRepository', () => {
     const byToken = await repo.getCampaignByToken('token-1', 'https://misneach.ie');
     expect(byToken.campaign.id).toBe('id-1');
     expect(byToken.results.staff.responseCount).toBe(0);
+  });
+
+  it('tracks campaign email delivery status', async () => {
+    const { repo, dynamo } = createRepo();
+    await repo.registerCampaign({ businessName: 'Cafe Beag', email: 'hello@example.com' }, 'https://misneach.ie');
+
+    await repo.markCampaignEmailQueued('id-1');
+    expect(dynamo.tables.get('survey-campaigns')?.get('id-1')?.emailStatus).toBe('queued');
+
+    await repo.markCampaignEmailFailed('id-1', 'Resend unavailable');
+    expect(dynamo.tables.get('survey-campaigns')?.get('id-1')?.emailStatus).toBe('failed');
+    expect(dynamo.tables.get('survey-campaigns')?.get('id-1')?.emailFailureReason).toBe('Resend unavailable');
+
+    await repo.markCampaignEmailSent('id-1');
+    expect(dynamo.tables.get('survey-campaigns')?.get('id-1')?.emailStatus).toBe('sent');
+    expect(dynamo.tables.get('survey-campaigns')?.get('id-1')?.emailFailureReason).toBeUndefined();
   });
 
   it('submits valid responses and aggregates by template and campaign', async () => {

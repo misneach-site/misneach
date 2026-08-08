@@ -4,7 +4,9 @@ import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as path from 'path';
 import { Construct } from 'constructs';
 
@@ -134,6 +136,22 @@ export class PublicApiStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    const publicEmailDlq = new sqs.Queue(this, 'PublicEmailDeadLetterQueue', {
+      queueName: `decyphr-${props.environmentName}-public-email-dlq`,
+      retentionPeriod: cdk.Duration.days(14),
+      removalPolicy: tableRemovalPolicy,
+    });
+    const publicEmailQueue = new sqs.Queue(this, 'PublicEmailQueue', {
+      queueName: `decyphr-${props.environmentName}-public-email`,
+      visibilityTimeout: cdk.Duration.seconds(60),
+      retentionPeriod: cdk.Duration.days(4),
+      deadLetterQueue: {
+        queue: publicEmailDlq,
+        maxReceiveCount: 3,
+      },
+      removalPolicy: tableRemovalPolicy,
+    });
+
     const waitlistJoinHandler = new nodejs.NodejsFunction(this, 'WaitlistJoinHandler', {
       functionName: `decyphr-${props.environmentName}-waitlist-join`,
       entry: path.join(__dirname, '../../../services/public-api/src/waitlist/handler.ts'),
@@ -163,6 +181,7 @@ export class PublicApiStack extends cdk.Stack {
         SURVEY_TEMPLATES_TABLE_NAME: surveyTemplatesTable.tableName,
         SURVEY_CAMPAIGNS_TABLE_NAME: surveyCampaignsTable.tableName,
         SURVEY_RESPONSES_TABLE_NAME: surveyResponsesTable.tableName,
+        PUBLIC_EMAIL_QUEUE_URL: publicEmailQueue.queueUrl,
         ...localAwsEnvironment,
       },
       bundling: {
@@ -173,6 +192,56 @@ export class PublicApiStack extends cdk.Stack {
     surveyTemplatesTable.grantReadWriteData(surveysHandler);
     surveyCampaignsTable.grantReadWriteData(surveysHandler);
     surveyResponsesTable.grantReadWriteData(surveysHandler);
+    publicEmailQueue.grantSendMessages(surveysHandler);
+
+    const publicEmailWorker = new nodejs.NodejsFunction(this, 'PublicEmailWorker', {
+      functionName: `decyphr-${props.environmentName}-public-email-worker`,
+      entry: path.join(__dirname, '../../../services/public-api/src/email/worker.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        SURVEY_TEMPLATES_TABLE_NAME: surveyTemplatesTable.tableName,
+        SURVEY_CAMPAIGNS_TABLE_NAME: surveyCampaignsTable.tableName,
+        SURVEY_RESPONSES_TABLE_NAME: surveyResponsesTable.tableName,
+        EMAIL_DELIVERY: isLocal ? 'log' : 'send',
+        EMAIL_FROM_PARAMETER_NAME: `${runtimeConfigParameterRoot}/public-email/EMAIL_FROM`,
+        RESEND_API_KEY_PARAMETER_NAME: `${runtimeConfigParameterRoot}/public-email/RESEND_API_KEY`,
+        ...localAwsEnvironment,
+      },
+      bundling: {
+        minify: true,
+        sourceMap: true,
+      },
+    });
+    surveyCampaignsTable.grantReadWriteData(publicEmailWorker);
+    publicEmailQueue.grantConsumeMessages(publicEmailWorker);
+    publicEmailWorker.addEventSource(
+      new lambdaEventSources.SqsEventSource(publicEmailQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      }),
+    );
+    publicEmailWorker.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadPublicEmailParameters',
+        actions: ['ssm:GetParameter'],
+        resources: [`${runtimeConfigParameterArnPrefix}/public-email/*`],
+      }),
+    );
+    publicEmailWorker.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'DecryptPublicEmailParameters',
+        actions: ['kms:Decrypt'],
+        resources: ['*'],
+        conditions: {
+          StringEquals: {
+            'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com`,
+          },
+        },
+      }),
+    );
 
     const httpApi = new apigatewayv2.HttpApi(this, 'PublicHttpApi', {
       apiName: `decyphr-${props.environmentName}-public-api`,
@@ -268,6 +337,16 @@ export class PublicApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SurveyResponsesTableName', {
       value: surveyResponsesTable.tableName,
       description: 'DynamoDB table backing public survey responses.',
+    });
+
+    new cdk.CfnOutput(this, 'PublicEmailQueueUrl', {
+      value: publicEmailQueue.queueUrl,
+      description: 'SQS queue for public email jobs.',
+    });
+
+    new cdk.CfnOutput(this, 'PublicEmailDeadLetterQueueUrl', {
+      value: publicEmailDlq.queueUrl,
+      description: 'SQS dead-letter queue for failed public email jobs.',
     });
   }
 }

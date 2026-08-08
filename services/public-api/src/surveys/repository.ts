@@ -1,4 +1,4 @@
-import { QueryCommand, PutCommand, GetCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand, PutCommand, GetCommand, UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import {
   aggregateSurveyResponses,
   buildSurveyCampaignLinks,
@@ -29,12 +29,17 @@ type SurveyTemplateRecord = SurveyTemplateDefinition & {
   isActive: boolean;
 };
 
-type SurveyCampaignRecord = {
+export type SurveyCampaignEmailStatus = 'pending' | 'queued' | 'sent' | 'failed';
+
+export type SurveyCampaignRecord = {
   id: string;
   manageToken: string;
   businessName: string;
   email: string;
   town: string | null;
+  emailStatus: SurveyCampaignEmailStatus;
+  emailStatusUpdatedAt: string;
+  emailFailureReason?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -159,6 +164,8 @@ export class SurveysRepository {
       businessName,
       email,
       town: town || null,
+      emailStatus: 'pending',
+      emailStatusUpdatedAt: timestamp,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -270,6 +277,18 @@ export class SurveysRepository {
     return this.aggregateTemplate(template, campaignId);
   }
 
+  async markCampaignEmailQueued(campaignId: string) {
+    return this.updateCampaignEmailStatus(campaignId, 'queued');
+  }
+
+  async markCampaignEmailSent(campaignId: string) {
+    return this.updateCampaignEmailStatus(campaignId, 'sent');
+  }
+
+  async markCampaignEmailFailed(campaignId: string, reason: string) {
+    return this.updateCampaignEmailStatus(campaignId, 'failed', reason);
+  }
+
   private async aggregateTemplate(template: SurveyTemplateRecord, campaignId?: string) {
     const responses = campaignId
       ? await this.queryResponsesByTemplateCampaign(template.key, campaignId)
@@ -368,6 +387,50 @@ export class SurveysRepository {
       ExclusiveStartKey = response.LastEvaluatedKey;
     } while (ExclusiveStartKey);
     return items;
+  }
+
+  private async updateCampaignEmailStatus(
+    campaignId: string,
+    status: SurveyCampaignEmailStatus,
+    failureReason?: string,
+  ) {
+    const timestamp = this.now().toISOString();
+    const names: Record<string, string> = {
+      '#emailStatus': 'emailStatus',
+      '#emailStatusUpdatedAt': 'emailStatusUpdatedAt',
+      '#updatedAt': 'updatedAt',
+    };
+    const values: Record<string, unknown> = {
+      ':emailStatus': status,
+      ':emailStatusUpdatedAt': timestamp,
+      ':updatedAt': timestamp,
+    };
+    const setExpressions = [
+      '#emailStatus = :emailStatus',
+      '#emailStatusUpdatedAt = :emailStatusUpdatedAt',
+      '#updatedAt = :updatedAt',
+    ];
+    let removeExpression = '';
+
+    if (failureReason) {
+      names['#emailFailureReason'] = 'emailFailureReason';
+      values[':emailFailureReason'] = failureReason.slice(0, 500);
+      setExpressions.push('#emailFailureReason = :emailFailureReason');
+    } else {
+      names['#emailFailureReason'] = 'emailFailureReason';
+      removeExpression = ' REMOVE #emailFailureReason';
+    }
+
+    await this.client.send(
+      new UpdateCommand({
+        TableName: this.tables.campaignsTableName,
+        Key: { id: campaignId },
+        UpdateExpression: `SET ${setExpressions.join(',')}${removeExpression}`,
+        ConditionExpression: 'attribute_exists(id)',
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+      }),
+    );
   }
 }
 

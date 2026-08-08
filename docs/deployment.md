@@ -104,6 +104,26 @@ arn:aws:ssm:<region>:<account-id>:parameter/misneach/prod/*
 
 If SecureString parameters use a customer-managed KMS key, allow `kms:Decrypt` for that key through SSM.
 
+Public survey email is sent by the public API email worker, not EC2. Set these SSM parameters before enabling survey campaign email in production:
+
+```bash
+aws ssm put-parameter \
+  --name /misneach/prod/public-email/EMAIL_FROM \
+  --type String \
+  --value 'Misneach <no-reply@misneach.site>' \
+  --overwrite \
+  --region eu-west-1
+
+aws ssm put-parameter \
+  --name /misneach/prod/public-email/RESEND_API_KEY \
+  --type SecureString \
+  --value '<resend-api-key>' \
+  --overwrite \
+  --region eu-west-1
+```
+
+The CDK public API stack grants the email worker read access to `/misneach/<env>/public-email/*`. EC2 compose env rendering does not write these Lambda-only values to `/opt/misneach/env`.
+
 Production host prerequisites:
 
 - `PROD_DEPLOY_PATH` exists as the production compose bundle directory.
@@ -257,7 +277,14 @@ See: [Environment Files README](../deploy/env/README.md)
 
 ## AWS CDK Public API Infrastructure
 
-The `@decyphr/aws-infra` workspace contains the CDK app for serverless public Misneach flows. It currently provisions the public waitlist/surveys Lambdas, API Gateway HTTP API, and DynamoDB tables.
+The `@decyphr/aws-infra` workspace contains the CDK app for serverless public Misneach flows. It provisions the public waitlist/surveys Lambdas, API Gateway HTTP API, DynamoDB tables, and the SQS-backed public email worker.
+
+Public survey campaign email operations:
+
+- Normal queue: use the `PublicEmailQueueUrl` CDK output.
+- Failed queue: use the `PublicEmailDeadLetterQueueUrl` CDK output.
+- A campaign record has `emailStatus` values of `pending`, `queued`, `sent`, or `failed`.
+- To retry a DLQ item, receive the message body from the DLQ, send that body to the normal queue, then delete the DLQ message after the normal queue send succeeds.
 
 Stack naming convention:
 

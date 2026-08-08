@@ -63,6 +63,33 @@ The surveys Lambda preserves the public response shapes from the existing `busin
 
 Set `SURVEYS_API_URL` in `misneach-web` to the CDK `PublicApiUrl` output to route the existing `/api/surveys/*` proxy to Lambda.
 
+Survey campaign setup sends public email through SQS instead of the request path:
+
+1. `POST /surveys/campaigns` writes the campaign to DynamoDB with `emailStatus=pending`.
+2. The survey Lambda enqueues a `survey.campaign-links` job and marks the campaign `queued`.
+3. `decyphr-<env>-public-email-worker` consumes the job, sends via Resend, and marks the campaign `sent` or `failed`.
+4. Failed worker attempts retry through SQS and eventually move to `decyphr-<env>-public-email-dlq`.
+
+Production email worker config is read from SSM Parameter Store:
+
+```txt
+/misneach/prod/public-email/EMAIL_FROM
+/misneach/prod/public-email/RESEND_API_KEY
+```
+
+Set `EMAIL_DELIVERY=log` only for local or test runs. Production CDK config sets the worker to `send` mode.
+
+Check failed public email jobs:
+
+```bash
+aws sqs get-queue-attributes \
+  --queue-url <PublicEmailDeadLetterQueueUrl> \
+  --attribute-names ApproximateNumberOfMessages \
+  --region eu-west-1
+```
+
+Replay a DLQ message by receiving it from the DLQ and sending the same body to `<PublicEmailQueueUrl>`, then deleting it from the DLQ after the send succeeds.
+
 ## Misneach Web Cutover
 
 Set `PUBLIC_API_URL` in `misneach-web` to the CDK `PublicApiUrl` output to route both public waitlist and survey proxies to Lambda:
