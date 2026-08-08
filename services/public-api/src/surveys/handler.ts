@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { createDynamoDocumentClient } from '../aws/dynamodb';
+import { enqueuePublicEmailJob, surveyCampaignLinksEmailJob } from '../email/queue';
 import { HttpError, jsonResponse, parseJsonBody } from '../http/responses';
-import { sendSurveyCampaignLinksEmail } from './email';
 import { SurveysRepository } from './repository';
 
 let repository: SurveysRepository | null = null;
@@ -49,11 +49,20 @@ export async function handler(event: APIGatewayProxyEventV2) {
     if (method === 'POST' && path === '/surveys/campaigns') {
       const body = readBody(event);
       const result = await surveys.registerCampaign(body, surveyBaseUrl());
-      await sendSurveyCampaignLinksEmail({
-        email: result.saved.email,
-        businessName: result.saved.businessName,
-        links: result.response.links,
-      });
+      try {
+        await enqueuePublicEmailJob(surveyCampaignLinksEmailJob({
+          campaignId: result.saved.id,
+          recipientEmail: result.saved.email,
+          businessName: result.saved.businessName,
+          links: result.response.links,
+        }));
+        await surveys.markCampaignEmailQueued(result.saved.id);
+      } catch (error) {
+        await surveys.markCampaignEmailFailed(result.saved.id, toErrorMessage(error)).catch((statusError) => {
+          console.error('Failed to mark survey campaign email as failed', statusError);
+        });
+        throw new HttpError(502, 'Survey campaign email could not be queued');
+      }
       return jsonResponse(201, result.response);
     }
 
@@ -95,4 +104,8 @@ function readBody(event: APIGatewayProxyEventV2): Record<string, unknown> {
 
 function surveyBaseUrl() {
   return process.env.SURVEY_PUBLIC_BASE_URL || process.env.WEB_PUBLIC_URL || 'http://localhost:5173';
+}
+
+function toErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
