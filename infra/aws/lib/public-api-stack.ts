@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -316,6 +317,226 @@ export class PublicApiStack extends cdk.Stack {
       integration: surveysIntegration,
     });
 
+    const dashboard = new cloudwatch.Dashboard(this, 'PublicApiDashboard', {
+      dashboardName: `decyphr-${props.environmentName}-public-api`,
+    });
+    const oneMinute = cdk.Duration.minutes(1);
+    const fiveMinutes = cdk.Duration.minutes(5);
+    const apiMetric = (metricName: string, statistic = 'Sum') =>
+      new cloudwatch.Metric({
+        namespace: 'AWS/ApiGateway',
+        metricName,
+        dimensionsMap: {
+          ApiId: httpApi.apiId,
+          Stage: '$default',
+        },
+        statistic,
+        period: oneMinute,
+      });
+    const tableMetric = (table: dynamodb.Table, metricName: string, statistic = 'Sum') =>
+      new cloudwatch.Metric({
+        namespace: 'AWS/DynamoDB',
+        metricName,
+        dimensionsMap: {
+          TableName: table.tableName,
+        },
+        statistic,
+        period: fiveMinutes,
+      });
+    const tableOperationMetric = (
+      table: dynamodb.Table,
+      metricName: string,
+      operation: 'GetItem' | 'PutItem' | 'Query' | 'UpdateItem',
+      statistic = 'Sum',
+    ) =>
+      new cloudwatch.Metric({
+        namespace: 'AWS/DynamoDB',
+        metricName,
+        dimensionsMap: {
+          TableName: table.tableName,
+          Operation: operation,
+        },
+        statistic,
+        period: oneMinute,
+      });
+    const dynamoDbUserErrorsMetric = () =>
+      new cloudwatch.Metric({
+        namespace: 'AWS/DynamoDB',
+        metricName: 'UserErrors',
+        statistic: 'Sum',
+        period: oneMinute,
+      });
+    const lambdaConcurrentExecutionsMetric = (handler: nodejs.NodejsFunction) =>
+      new cloudwatch.Metric({
+        namespace: 'AWS/Lambda',
+        metricName: 'ConcurrentExecutions',
+        dimensionsMap: {
+          FunctionName: handler.functionName,
+        },
+        statistic: 'Maximum',
+        period: oneMinute,
+      });
+
+    dashboard.addWidgets(
+      new cloudwatch.TextWidget({
+        width: 24,
+        height: 2,
+        markdown: [
+          `# Decyphr ${props.environmentName} public API`,
+          'Operational view for API Gateway, Lambda handlers, DynamoDB tables, and public email SQS queues.',
+        ].join('\n\n'),
+      }),
+    );
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'API Gateway Requests and Errors',
+        width: 12,
+        left: [apiMetric('Count'), apiMetric('4xx'), apiMetric('5xx')],
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'API Gateway Latency',
+        width: 12,
+        left: [apiMetric('Latency', 'Average'), apiMetric('IntegrationLatency', 'Average')],
+        leftYAxis: {
+          label: 'Milliseconds',
+        },
+      }),
+    );
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Lambda Invocations and Errors',
+        width: 12,
+        left: [
+          waitlistJoinHandler.metricInvocations({ period: oneMinute, statistic: 'Sum' }),
+          surveysHandler.metricInvocations({ period: oneMinute, statistic: 'Sum' }),
+          publicEmailWorker.metricInvocations({ period: oneMinute, statistic: 'Sum' }),
+        ],
+        right: [
+          waitlistJoinHandler.metricErrors({ period: oneMinute, statistic: 'Sum' }),
+          surveysHandler.metricErrors({ period: oneMinute, statistic: 'Sum' }),
+          publicEmailWorker.metricErrors({ period: oneMinute, statistic: 'Sum' }),
+        ],
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Lambda Duration',
+        width: 12,
+        left: [
+          waitlistJoinHandler.metricDuration({ period: oneMinute, statistic: 'Average' }),
+          surveysHandler.metricDuration({ period: oneMinute, statistic: 'Average' }),
+          publicEmailWorker.metricDuration({ period: oneMinute, statistic: 'Average' }),
+        ],
+        leftYAxis: {
+          label: 'Milliseconds',
+        },
+      }),
+    );
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Lambda Throttles and Concurrency',
+        width: 24,
+        left: [
+          waitlistJoinHandler.metricThrottles({ period: oneMinute, statistic: 'Sum' }),
+          surveysHandler.metricThrottles({ period: oneMinute, statistic: 'Sum' }),
+          publicEmailWorker.metricThrottles({ period: oneMinute, statistic: 'Sum' }),
+        ],
+        right: [
+          lambdaConcurrentExecutionsMetric(waitlistJoinHandler),
+          lambdaConcurrentExecutionsMetric(surveysHandler),
+          lambdaConcurrentExecutionsMetric(publicEmailWorker),
+        ],
+      }),
+    );
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'DynamoDB Consumed Capacity',
+        width: 12,
+        left: [
+          tableMetric(waitlistTable, 'ConsumedReadCapacityUnits'),
+          tableMetric(surveyTemplatesTable, 'ConsumedReadCapacityUnits'),
+          tableMetric(surveyCampaignsTable, 'ConsumedReadCapacityUnits'),
+          tableMetric(surveyResponsesTable, 'ConsumedReadCapacityUnits'),
+        ],
+        right: [
+          tableMetric(waitlistTable, 'ConsumedWriteCapacityUnits'),
+          tableMetric(surveyTemplatesTable, 'ConsumedWriteCapacityUnits'),
+          tableMetric(surveyCampaignsTable, 'ConsumedWriteCapacityUnits'),
+          tableMetric(surveyResponsesTable, 'ConsumedWriteCapacityUnits'),
+        ],
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'DynamoDB Throttles and Errors',
+        width: 12,
+        left: [
+          tableMetric(waitlistTable, 'ReadThrottleEvents'),
+          tableMetric(waitlistTable, 'WriteThrottleEvents'),
+          tableMetric(surveyTemplatesTable, 'ReadThrottleEvents'),
+          tableMetric(surveyTemplatesTable, 'WriteThrottleEvents'),
+          tableMetric(surveyCampaignsTable, 'ReadThrottleEvents'),
+          tableMetric(surveyCampaignsTable, 'WriteThrottleEvents'),
+          tableMetric(surveyResponsesTable, 'ReadThrottleEvents'),
+          tableMetric(surveyResponsesTable, 'WriteThrottleEvents'),
+        ],
+        right: [
+          tableOperationMetric(waitlistTable, 'SystemErrors', 'PutItem'),
+          tableOperationMetric(surveyTemplatesTable, 'SystemErrors', 'GetItem'),
+          tableOperationMetric(surveyTemplatesTable, 'SystemErrors', 'Query'),
+          tableOperationMetric(surveyCampaignsTable, 'SystemErrors', 'PutItem'),
+          tableOperationMetric(surveyCampaignsTable, 'SystemErrors', 'GetItem'),
+          tableOperationMetric(surveyCampaignsTable, 'SystemErrors', 'Query'),
+          tableOperationMetric(surveyCampaignsTable, 'SystemErrors', 'UpdateItem'),
+          tableOperationMetric(surveyResponsesTable, 'SystemErrors', 'PutItem'),
+          tableOperationMetric(surveyResponsesTable, 'SystemErrors', 'Query'),
+          dynamoDbUserErrorsMetric(),
+        ],
+      }),
+    );
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Public Email Queue Depth and Age',
+        width: 12,
+        left: [
+          publicEmailQueue.metricApproximateNumberOfMessagesVisible({
+            period: oneMinute,
+            statistic: 'Maximum',
+            label: 'queue visible',
+          }),
+          publicEmailDlq.metricApproximateNumberOfMessagesVisible({
+            period: oneMinute,
+            statistic: 'Maximum',
+            label: 'DLQ visible',
+          }),
+        ],
+        right: [
+          publicEmailQueue.metricApproximateAgeOfOldestMessage({
+            period: oneMinute,
+            statistic: 'Maximum',
+            label: 'queue oldest age',
+          }),
+          publicEmailDlq.metricApproximateAgeOfOldestMessage({
+            period: oneMinute,
+            statistic: 'Maximum',
+            label: 'DLQ oldest age',
+          }),
+        ],
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Public Email Queue Throughput',
+        width: 12,
+        left: [
+          publicEmailQueue.metricNumberOfMessagesSent({ period: oneMinute, statistic: 'Sum' }),
+          publicEmailQueue.metricNumberOfMessagesReceived({ period: oneMinute, statistic: 'Sum' }),
+          publicEmailQueue.metricNumberOfMessagesDeleted({ period: oneMinute, statistic: 'Sum' }),
+        ],
+        right: [
+          publicEmailDlq.metricNumberOfMessagesSent({
+            period: oneMinute,
+            statistic: 'Sum',
+            label: 'DLQ messages sent',
+          }),
+        ],
+      }),
+    );
+
     new cdk.CfnOutput(this, 'EnvironmentName', {
       value: props.environmentName,
       description: 'Deployment environment name used for resource naming.',
@@ -369,6 +590,16 @@ export class PublicApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'PublicEmailDeadLetterQueueUrl', {
       value: publicEmailDlq.queueUrl,
       description: 'SQS dead-letter queue for failed public email jobs.',
+    });
+
+    new cdk.CfnOutput(this, 'PublicApiDashboardName', {
+      value: dashboard.dashboardName,
+      description: 'CloudWatch dashboard for public API operational metrics.',
+    });
+
+    new cdk.CfnOutput(this, 'PublicApiDashboardUrl', {
+      value: `https://${cdk.Aws.REGION}.console.aws.amazon.com/cloudwatch/home?region=${cdk.Aws.REGION}#dashboards:name=${dashboard.dashboardName}`,
+      description: 'Console URL for the public API CloudWatch dashboard.',
     });
   }
 }
