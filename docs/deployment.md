@@ -311,7 +311,7 @@ See: [Environment Files README](../deploy/env/README.md)
 
 ## AWS CDK Public API Infrastructure
 
-The `@decyphr/aws-infra` workspace contains the CDK app for serverless public Misneach flows. It provisions the public waitlist/surveys Lambdas, API Gateway HTTP API, DynamoDB tables, DynamoDB TTL storage for magic-link tokens, and the SQS-backed public email worker.
+The `@decyphr/aws-infra` workspace contains the CDK app for serverless public Misneach flows. It provisions the public waitlist/surveys Lambdas, API Gateway HTTP API, DynamoDB tables, DynamoDB TTL storage for magic-link tokens, the SQS-backed public email worker, and a CloudWatch dashboard for production operations.
 
 Public survey campaign email operations:
 
@@ -320,6 +320,14 @@ Public survey campaign email operations:
 - A campaign record has `emailStatus` values of `pending`, `queued`, `sent`, or `failed`.
 - Magic-link token records are keyed by `tokenHash`; raw tokens are not stored. `expiresAtEpoch` is the DynamoDB TTL attribute, but application code still rejects expired links because TTL deletion is eventual.
 - To retry a DLQ item, receive the message body from the DLQ, send that body to the normal queue, then delete the DLQ message after the normal queue send succeeds.
+
+CloudWatch operations:
+
+- Dashboard: use the `PublicApiDashboardUrl` CDK output, or open CloudWatch Dashboards and select `decyphr-prod-public-api`.
+- API Gateway trouble signs: sustained 5xx responses, a 4xx spike that does not match expected validation failures, or rising latency/integration latency.
+- Lambda trouble signs: errors, throttles, long average duration, or concurrency climbing unexpectedly.
+- DynamoDB trouble signs: read/write throttle events, table operation system errors, or account-level user errors after a deploy.
+- Public email trouble signs: visible messages building up, oldest message age rising, or any visible messages in the DLQ.
 
 Stack naming convention:
 

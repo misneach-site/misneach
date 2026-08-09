@@ -66,7 +66,20 @@ Runtime compose env values are read from SSM under:
 /misneach/prod/<service>/<ENV_VAR_NAME>
 ```
 
-The stack outputs `RuntimeConfigParameterRoot`, `RuntimeConfigParameterArnPattern`, `MagicLinkTokensTableName`, `PublicEmailQueueUrl`, and `PublicEmailDeadLetterQueueUrl`.
+The stack outputs `RuntimeConfigParameterRoot`, `RuntimeConfigParameterArnPattern`, `MagicLinkTokensTableName`, `PublicEmailQueueUrl`, `PublicEmailDeadLetterQueueUrl`, `PublicApiDashboardName`, and `PublicApiDashboardUrl`.
+
+## CloudWatch Dashboard
+
+CDK creates a dashboard named `decyphr-<environment>-public-api`. For production, open the `PublicApiDashboardUrl` stack output or choose `decyphr-prod-public-api` in CloudWatch Dashboards.
+
+The dashboard covers:
+
+- API Gateway request count, 4xx, 5xx, latency, and integration latency.
+- Lambda invocations, errors, duration, throttles, and concurrent executions for waitlist, surveys, and public email worker.
+- DynamoDB consumed read/write capacity, throttle events, table operation system errors, and account-level user errors for waitlist and survey traffic.
+- SQS visible messages, oldest message age, sent/received/deleted throughput, and DLQ depth for public email delivery.
+
+Investigate sustained 5xx responses, Lambda errors or throttles, DynamoDB throttles/system errors/user errors, queue age growth, or any visible DLQ messages.
 
 Deploy and write CDK outputs to a file:
 
