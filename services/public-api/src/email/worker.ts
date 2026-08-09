@@ -1,5 +1,6 @@
 import type { SQSBatchResponse, SQSEvent, SQSRecord } from 'aws-lambda';
 import { createDynamoDocumentClient } from '../aws/dynamodb';
+import { sendEmail } from './delivery';
 import { sendSurveyCampaignLinksEmail } from '../surveys/email';
 import { SurveysRepository } from '../surveys/repository';
 import { parsePublicEmailJob, type PublicEmailJob } from './jobs';
@@ -61,6 +62,16 @@ async function handleJob(job: PublicEmailJob) {
         campaignId: job.campaignId,
         error: toErrorMessage(error),
       });
+    });
+    return;
+  }
+
+  if (job.type === 'email.send') {
+    await sendEmail({
+      to: job.to,
+      subject: job.subject,
+      html: job.html,
+      text: job.text,
     });
     return;
   }

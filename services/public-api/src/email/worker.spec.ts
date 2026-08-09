@@ -12,7 +12,12 @@ jest.mock('../surveys/email', () => ({
   sendSurveyCampaignLinksEmail: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('./delivery', () => ({
+  sendEmail: jest.fn().mockResolvedValue(undefined),
+}));
+
 import type { SQSEvent, SQSRecord } from 'aws-lambda';
+import { sendEmail } from './delivery';
 import { sendSurveyCampaignLinksEmail } from '../surveys/email';
 import { handler } from './worker';
 
@@ -28,6 +33,8 @@ describe('public email worker', () => {
     send.mockResolvedValue({});
     jest.mocked(sendSurveyCampaignLinksEmail).mockClear();
     jest.mocked(sendSurveyCampaignLinksEmail).mockResolvedValue(undefined);
+    jest.mocked(sendEmail).mockClear();
+    jest.mocked(sendEmail).mockResolvedValue(undefined);
   });
 
   afterAll(() => {
@@ -78,6 +85,25 @@ describe('public email worker', () => {
     expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'message-1' }]);
     expect(send.mock.calls[0][0].input.ExpressionAttributeValues[':emailStatus']).toBe('failed');
     expect(send.mock.calls[0][0].input.ExpressionAttributeValues[':emailFailureReason']).toBe('Resend unavailable');
+  });
+
+  it('sends generic email jobs', async () => {
+    const response = await handler(eventFor({
+      type: 'email.send',
+      purpose: 'auth.magic-link',
+      to: 'hello@example.com',
+      subject: 'Your login link',
+      html: '<p>Hello</p>',
+      text: 'Hello',
+    }));
+
+    expect(response.batchItemFailures).toEqual([]);
+    expect(sendEmail).toHaveBeenCalledWith({
+      to: 'hello@example.com',
+      subject: 'Your login link',
+      html: '<p>Hello</p>',
+      text: 'Hello',
+    });
   });
 });
 

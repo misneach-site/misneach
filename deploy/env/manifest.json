@@ -940,6 +940,36 @@
           "name": "ADMIN_UI_ENABLED",
           "type": "String",
           "required": true
+        },
+        {
+          "name": "AWS_REGION",
+          "type": "String",
+          "required": true
+        },
+        {
+          "name": "MAGIC_LINK_TOKENS_TABLE_NAME",
+          "type": "String",
+          "required": true
+        },
+        {
+          "name": "MAGIC_LINK_TOKEN_HASH_SECRET",
+          "type": "SecureString",
+          "required": true
+        },
+        {
+          "name": "PUBLIC_EMAIL_QUEUE_URL",
+          "type": "String",
+          "required": true
+        },
+        {
+          "name": "AWS_ENDPOINT_URL",
+          "type": "String",
+          "required": false
+        },
+        {
+          "name": "FLOCI_AWS_ENDPOINT_URL",
+          "type": "String",
+          "required": false
         }
       ]
     }
