@@ -34,9 +34,10 @@ export class PublicApiStack extends cdk.Stack {
     const runtimeConfigParameterRoot = `/misneach/${props.environmentName}`;
     const runtimeConfigParameterArnPrefix = `arn:${cdk.Aws.PARTITION}:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter${runtimeConfigParameterRoot}`;
     const runtimeConfigReaderRoleArn = this.node.tryGetContext('runtimeConfigReaderRoleArn') || process.env.RUNTIME_CONFIG_READER_ROLE_ARN;
+    let runtimeConfigReaderRole: iam.IRole | undefined;
 
     if (runtimeConfigReaderRoleArn) {
-      const runtimeConfigReaderRole = iam.Role.fromRoleArn(
+      runtimeConfigReaderRole = iam.Role.fromRoleArn(
         this,
         'RuntimeConfigReaderRole',
         runtimeConfigReaderRoleArn,
@@ -136,6 +137,17 @@ export class PublicApiStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    const magicLinkTokensTable = new dynamodb.Table(this, 'MagicLinkTokensTable', {
+      tableName: `decyphr-${props.environmentName}-magic-link-tokens`,
+      partitionKey: {
+        name: 'tokenHash',
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAtEpoch',
+      removalPolicy: tableRemovalPolicy,
+    });
+
     const publicEmailDlq = new sqs.Queue(this, 'PublicEmailDeadLetterQueue', {
       queueName: `decyphr-${props.environmentName}-public-email-dlq`,
       retentionPeriod: cdk.Duration.days(14),
@@ -193,6 +205,11 @@ export class PublicApiStack extends cdk.Stack {
     surveyCampaignsTable.grantReadWriteData(surveysHandler);
     surveyResponsesTable.grantReadWriteData(surveysHandler);
     publicEmailQueue.grantSendMessages(surveysHandler);
+
+    if (runtimeConfigReaderRole) {
+      magicLinkTokensTable.grantReadWriteData(runtimeConfigReaderRole);
+      publicEmailQueue.grantSendMessages(runtimeConfigReaderRole);
+    }
 
     const publicEmailWorker = new nodejs.NodejsFunction(this, 'PublicEmailWorker', {
       functionName: `decyphr-${props.environmentName}-public-email-worker`,
@@ -337,6 +354,11 @@ export class PublicApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SurveyResponsesTableName', {
       value: surveyResponsesTable.tableName,
       description: 'DynamoDB table backing public survey responses.',
+    });
+
+    new cdk.CfnOutput(this, 'MagicLinkTokensTableName', {
+      value: magicLinkTokensTable.tableName,
+      description: 'DynamoDB table backing hashed magic-link tokens with TTL.',
     });
 
     new cdk.CfnOutput(this, 'PublicEmailQueueUrl', {

@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
-import { MagicLink } from './auth/entities/MagicLink';
 import { User } from './auth/entities/User';
 import { ChallengesModule } from './challenges/challenges.module';
 import { AdminModule } from './admin/admin.module';
@@ -39,7 +38,7 @@ import { DailyNotesModule } from './daily-notes/daily-notes.module';
       username: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
-      entities: [User, MagicLink, LanguageSetting, DailyNote],
+      entities: [User, LanguageSetting, DailyNote],
       synchronize: true,
     }),
     AuthModule,

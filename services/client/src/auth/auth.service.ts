@@ -8,7 +8,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { Response } from 'express';
 import { readFile } from 'fs/promises';
@@ -16,8 +15,9 @@ import { join } from 'path';
 import { Resend } from 'resend';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
-import { MagicLink } from './entities/MagicLink';
 import { User } from './entities/User';
+import { MagicLinkEmailQueue } from './magic-link-email-queue';
+import { MagicLinkTokenStore } from './magic-link-token-store';
 import { AuthenticatedRequest } from './types/request';
 
 type AppBrand = {
@@ -83,10 +83,9 @@ export class AuthService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
 
-    @InjectRepository(MagicLink)
-    private readonly magicLinkRepo: Repository<MagicLink>,
-
     private readonly config: ConfigService,
+    private readonly magicLinkTokenStore: MagicLinkTokenStore,
+    private readonly magicLinkEmailQueue: MagicLinkEmailQueue,
   ) {
     this.resend = new Resend(this.config.get<string>('RESEND_API_KEY'));
   }
@@ -324,15 +323,16 @@ export class AuthService {
   }
 
   async handleMagicLink(email: string, appBaseUrl?: string): Promise<{ message: string }> {
-    if (!email) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail) {
       this.logger.warn('magic_link_rejected cause=missing_email');
       throw new Error('Email is required');
     }
 
-    let user = await this.userRepo.findOne({ where: { email } });
+    let user = await this.userRepo.findOne({ where: { email: normalizedEmail } });
     if (!user) {
       user = this.userRepo.create({
-        email,
+        email: normalizedEmail,
         clientId: uuidv4(),
         role: 'learner',
         hasCompletedSignup: false,
@@ -343,19 +343,17 @@ export class AuthService {
       await this.userRepo.save(user);
     }
 
-    const token = crypto.randomBytes(32).toString('hex');
-    const hashedToken = await bcrypt.hash(token, 10);
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-
-    const magicLink = this.magicLinkRepo.create({
-      user,
-      token: hashedToken,
-      expiresAt,
-    });
-    await this.magicLinkRepo.save(magicLink);
-
     const appUrl = this.resolveMagicLinkAppUrl(appBaseUrl);
-    const verifyUrl = `${appUrl}/auth/verify-request?token=${token}&email=${email}`;
+    const { token } = await this.magicLinkTokenStore.create({
+      email: normalizedEmail,
+      userId: user.id,
+      appBaseUrl: appUrl,
+      metadata: {
+        clientId: user.clientId,
+      },
+    });
+
+    const verifyUrl = `${appUrl}/auth/verify-request?token=${token}&email=${normalizedEmail}`;
     const brand = this.resolveAppBrand(appUrl);
     this.logger.log(
       `magic_link_generated userId=${user.id} clientId=${user.clientId} appUrl=${appUrl} deliveryMode=${this.config.get<string>('EMAIL_DELIVERY', 'send')}`,
@@ -378,11 +376,17 @@ export class AuthService {
       .replace(/{{t\.footer}}/g, selectedTranslations.footer);
 
     const deliveryMode = this.config.get<string>('EMAIL_DELIVERY', 'send');
+    const emailText = [
+      selectedTranslations.greeting,
+      selectedTranslations.intro,
+      verifyUrl,
+      selectedTranslations.note,
+    ].join('\n\n');
 
     if (deliveryMode === 'log') {
       // Clear, grep-friendly logs
       console.log('—— MAGIC LINK (EMAIL DELIVERY DISABLED) ——');
-      console.log('To:', email);
+      console.log('To:', normalizedEmail);
       console.log('Verify URL:', verifyUrl);
       console.log('———————————————');
       this.logger.log(`magic_link_delivery_logged userId=${user.id} clientId=${user.clientId}`);
@@ -392,9 +396,28 @@ export class AuthService {
       };
     }
 
+    const queued = await this.magicLinkEmailQueue.enqueue({
+      type: 'email.send',
+      purpose: 'auth.magic-link',
+      to: normalizedEmail,
+      subject: selectedTranslations.subject,
+      html: emailHtml,
+      text: emailText,
+      metadata: {
+        userId: user.id,
+        clientId: user.clientId,
+        appBaseUrl: appUrl,
+      },
+    });
+
+    if (queued) {
+      this.logger.log(`magic_link_email_queued userId=${user.id} clientId=${user.clientId}`);
+      return { message: 'Magic link sent!' };
+    }
+
     await this.resend.emails.send({
       from: this.config.get<string>('EMAIL_FROM'),
-      to: email,
+      to: normalizedEmail,
       subject: selectedTranslations.subject,
       html: emailHtml,
     });
@@ -404,37 +427,29 @@ export class AuthService {
   }
 
   async verifyMagicLinkToken(token: string, email: string): Promise<User> {
-    if (!token || !email) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!token || !normalizedEmail) {
       this.logger.warn('magic_link_verify_failed cause=invalid_request');
       throw new BadRequestException('Invalid request');
     }
 
-    const magicLink = await this.magicLinkRepo
-      .createQueryBuilder('magicLink')
-      .leftJoinAndSelect('magicLink.user', 'user')
-      .where('user.email = :email', { email })
-      .orderBy('magicLink.createdAt', 'DESC')
-      .getOne();
-
-    if (!magicLink) {
-      this.logger.warn(`magic_link_verify_failed email=${email} cause=token_not_found`);
-      throw new NotFoundException('Token not found');
+    try {
+      await this.magicLinkTokenStore.consume({ token, email: normalizedEmail, purpose: 'login' });
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        this.logger.warn(`magic_link_verify_failed email=${normalizedEmail} cause=token_not_found`);
+        throw error;
+      }
+      if (error instanceof UnauthorizedException) {
+        this.logger.warn(`magic_link_verify_failed email=${normalizedEmail} cause=${error.message}`);
+        throw error;
+      }
+      throw error;
     }
 
-    if (new Date(magicLink.expiresAt) < new Date()) {
-      this.logger.warn(`magic_link_verify_failed email=${email} cause=token_expired`);
-      throw new UnauthorizedException('Token expired');
-    }
-
-    const isValid = await bcrypt.compare(token, magicLink.token);
-    if (!isValid) {
-      this.logger.warn(`magic_link_verify_failed email=${email} cause=token_invalid`);
-      throw new UnauthorizedException('Invalid token');
-    }
-
-    const user = await this.userRepo.findOne({ where: { email } });
+    const user = await this.userRepo.findOne({ where: { email: normalizedEmail } });
     if (!user?.clientId) {
-      this.logger.error(`magic_link_verify_failed email=${email} cause=missing_client_id`);
+      this.logger.error(`magic_link_verify_failed email=${normalizedEmail} cause=missing_client_id`);
       throw new InternalServerErrorException('Client ID missing');
     }
 

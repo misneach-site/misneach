@@ -124,6 +124,40 @@ aws ssm put-parameter \
 
 The CDK public API stack grants the email worker read access to `/misneach/<env>/public-email/*`. EC2 compose env rendering does not write these Lambda-only values to `/opt/misneach/env`.
 
+Magic-link tokens are stored in DynamoDB with TTL instead of MariaDB/EC2-local state. After deploying the public API CDK stack, set these client env SSM parameters from the stack outputs:
+
+```bash
+aws ssm put-parameter \
+  --name /misneach/prod/client/AWS_REGION \
+  --type String \
+  --value eu-west-1 \
+  --overwrite \
+  --region eu-west-1
+
+aws ssm put-parameter \
+  --name /misneach/prod/client/MAGIC_LINK_TOKENS_TABLE_NAME \
+  --type String \
+  --value decyphr-prod-magic-link-tokens \
+  --overwrite \
+  --region eu-west-1
+
+aws ssm put-parameter \
+  --name /misneach/prod/client/MAGIC_LINK_TOKEN_HASH_SECRET \
+  --type SecureString \
+  --value '<strong-random-secret>' \
+  --overwrite \
+  --region eu-west-1
+
+aws ssm put-parameter \
+  --name /misneach/prod/client/PUBLIC_EMAIL_QUEUE_URL \
+  --type String \
+  --value '<PublicEmailQueueUrl output>' \
+  --overwrite \
+  --region eu-west-1
+```
+
+The EC2/client runtime role needs `dynamodb:GetItem`, `dynamodb:PutItem`, and `dynamodb:UpdateItem` on the magic-link token table, plus `sqs:SendMessage` on the public email queue. When `RUNTIME_CONFIG_READER_ROLE_ARN` points at that runtime role, the CDK stack grants those permissions.
+
 Production host prerequisites:
 
 - `PROD_DEPLOY_PATH` exists as the production compose bundle directory.
@@ -277,13 +311,14 @@ See: [Environment Files README](../deploy/env/README.md)
 
 ## AWS CDK Public API Infrastructure
 
-The `@decyphr/aws-infra` workspace contains the CDK app for serverless public Misneach flows. It provisions the public waitlist/surveys Lambdas, API Gateway HTTP API, DynamoDB tables, and the SQS-backed public email worker.
+The `@decyphr/aws-infra` workspace contains the CDK app for serverless public Misneach flows. It provisions the public waitlist/surveys Lambdas, API Gateway HTTP API, DynamoDB tables, DynamoDB TTL storage for magic-link tokens, and the SQS-backed public email worker.
 
 Public survey campaign email operations:
 
 - Normal queue: use the `PublicEmailQueueUrl` CDK output.
 - Failed queue: use the `PublicEmailDeadLetterQueueUrl` CDK output.
 - A campaign record has `emailStatus` values of `pending`, `queued`, `sent`, or `failed`.
+- Magic-link token records are keyed by `tokenHash`; raw tokens are not stored. `expiresAtEpoch` is the DynamoDB TTL attribute, but application code still rejects expired links because TTL deletion is eventual.
 - To retry a DLQ item, receive the message body from the DLQ, send that body to the normal queue, then delete the DLQ message after the normal queue send succeeds.
 
 Stack naming convention:

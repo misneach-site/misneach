@@ -52,7 +52,7 @@ Deploy to AWS:
 npm run deploy --workspace @decyphr/aws-infra
 ```
 
-Attach runtime config SSM read permissions to an existing deploy/runtime IAM role:
+Attach runtime config SSM read permissions, magic-link token table access, and public email queue send permissions to an existing deploy/runtime IAM role:
 
 ```bash
 npm run deploy --workspace @decyphr/aws-infra -- \
@@ -66,7 +66,7 @@ Runtime compose env values are read from SSM under:
 /misneach/prod/<service>/<ENV_VAR_NAME>
 ```
 
-The stack outputs `RuntimeConfigParameterRoot` and `RuntimeConfigParameterArnPattern`.
+The stack outputs `RuntimeConfigParameterRoot`, `RuntimeConfigParameterArnPattern`, `MagicLinkTokensTableName`, `PublicEmailQueueUrl`, and `PublicEmailDeadLetterQueueUrl`.
 
 Deploy and write CDK outputs to a file:
 

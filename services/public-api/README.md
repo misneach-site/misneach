@@ -90,6 +90,8 @@ aws sqs get-queue-attributes \
 
 Replay a DLQ message by receiving it from the DLQ and sending the same body to `<PublicEmailQueueUrl>`, then deleting it from the DLQ after the send succeeds.
 
+The same worker also accepts generic `email.send` jobs for follow-on public/auth flows such as magic-link email. Those jobs contain the final `to`, `subject`, `html`, and `text` payload, while the worker remains the only Lambda with Resend credentials.
+
 ## Misneach Web Cutover
 
 Set `PUBLIC_API_URL` in `misneach-web` to the CDK `PublicApiUrl` output to route both public waitlist and survey proxies to Lambda:

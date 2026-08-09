@@ -8,7 +8,17 @@ export type SurveyCampaignLinksEmailJob = {
   links: SurveyCampaignLinks;
 };
 
-export type PublicEmailJob = SurveyCampaignLinksEmailJob;
+export type SendEmailJob = {
+  type: 'email.send';
+  purpose: string;
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type PublicEmailJob = SurveyCampaignLinksEmailJob | SendEmailJob;
 
 export function parsePublicEmailJob(value: unknown): PublicEmailJob {
   if (!isRecord(value)) throw new Error('Email job payload must be an object');
@@ -20,6 +30,26 @@ export function parsePublicEmailJob(value: unknown): PublicEmailJob {
       isRecord(value.links)
     ) {
       return value as SurveyCampaignLinksEmailJob;
+    }
+  }
+
+  if (value.type === 'email.send') {
+    if (
+      typeof value.purpose === 'string' &&
+      typeof value.to === 'string' &&
+      typeof value.subject === 'string' &&
+      typeof value.html === 'string' &&
+      typeof value.text === 'string'
+    ) {
+      return {
+        type: 'email.send',
+        purpose: value.purpose,
+        to: value.to,
+        subject: value.subject,
+        html: value.html,
+        text: value.text,
+        ...(isRecord(value.metadata) ? { metadata: value.metadata } : {}),
+      };
     }
   }
 
